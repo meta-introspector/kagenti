@@ -48,9 +48,7 @@ def _sanitize_error_response(body: dict) -> dict:
     def _strip(obj: object) -> object:
         if isinstance(obj, dict):
             return {
-                k: _strip(v)
-                for k, v in obj.items()
-                if k not in _SENSITIVE_ERROR_FIELDS
+                k: _strip(v) for k, v in obj.items() if k not in _SENSITIVE_ERROR_FIELDS
             }
         if isinstance(obj, list):
             return [_strip(item) for item in obj]
@@ -95,6 +93,7 @@ db: asyncpg.Pool | None = None
 async def _get_pool() -> asyncpg.Pool | None:
     """Return the DB pool if available."""
     return db
+
 
 CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS llm_calls (
@@ -152,9 +151,7 @@ ON CONFLICT (scope, scope_key, namespace) DO NOTHING;
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global db, _http_client
-    _http_client = httpx.AsyncClient(
-        base_url=LITELLM_URL, timeout=httpx.Timeout(300.0)
-    )
+    _http_client = httpx.AsyncClient(base_url=LITELLM_URL, timeout=httpx.Timeout(300.0))
     if not DATABASE_URL:
         logger.error("DATABASE_URL not set — running without persistence")
     else:
@@ -275,9 +272,7 @@ async def _check_budget(
     async with pool.acquire() as conn:
         async with conn.transaction():
             # Advisory lock on session_id hash to prevent concurrent budget bypass
-            await conn.execute(
-                "SELECT pg_advisory_xact_lock(hashtext($1))", session_id
-            )
+            await conn.execute("SELECT pg_advisory_xact_lock(hashtext($1))", session_id)
             used = await conn.fetchval(
                 "SELECT COALESCE(SUM(total_tokens), 0) FROM llm_calls WHERE session_id = $1",
                 session_id,
