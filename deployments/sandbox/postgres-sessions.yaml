@@ -18,6 +18,9 @@ stringData:
   database: sessions
   username: kagenti
   password: kagenti-sessions-dev
+  checkpoint-db-url: "postgresql://kagenti:kagenti-sessions-dev@postgres-sessions.team1:5432/sessions?sslmode=disable"
+  task-store-db-url: "postgresql+psycopg://kagenti:kagenti-sessions-dev@postgres-sessions.team1:5432/sessions?sslmode=disable"
+  llm-budget-db-url: "postgresql://kagenti:kagenti-sessions-dev@postgres-sessions.team1.svc:5432/llm_budget"
 ---
 apiVersion: apps/v1
 kind: StatefulSet
