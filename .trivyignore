@@ -25,3 +25,10 @@ AVD-KSV-0048
 
 # AVD-KSV-0049: ClusterRole managing configmaps (required for Kagenti config)
 AVD-KSV-0049
+
+# Sandbox deployment manifests use on-cluster registries that are legitimate:
+# - image-registry.openshift-image-registry.svc:5000: OpenShift internal build registry
+# - registry.redhat.io: Red Hat certified enterprise images
+# - ghcr.io/berriai: LiteLLM upstream image
+# These cannot use docker.io alternatives as they are built/pulled at deployment time.
+AVD-KSV-0125
