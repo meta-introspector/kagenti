@@ -12,6 +12,7 @@ packs:
     source: https://github.com/claude-plugins-official/superpowers
     commit: "HEAD"
     path: skills/
+    # Integrity verification is not yet implemented — these are placeholder values
     integrity: ""
     signer: anthropic-bot
     default: true

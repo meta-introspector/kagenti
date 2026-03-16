@@ -15,6 +15,9 @@
 #   # From the repository root:
 #   ./kagenti/auth/create-test-users.sh
 #
+#   # Show passwords in output:
+#   ./kagenti/auth/create-test-users.sh --reveal
+#
 #   # With custom realm (default: master):
 #   KEYCLOAK_REALM=demo ./kagenti/auth/create-test-users.sh
 #
@@ -22,6 +25,9 @@
 #   KEYCLOAK_NAMESPACE=my-keycloak ./kagenti/auth/create-test-users.sh
 #
 set -euo pipefail
+
+REVEAL=false
+for arg in "$@"; do [[ "$arg" == "--reveal" ]] && REVEAL=true; done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../.github/scripts/lib/logging.sh" 2>/dev/null || {
@@ -60,8 +66,8 @@ fi
 
 log_info "Logging in as $KC_USER..."
 kubectl exec -n "$KC_NS" "$KC_POD" -- bash -c \
-    "$KCADM config credentials --server http://localhost:8080 --realm master \
-     --user '$KC_USER' --password '$KC_PASS' --config /tmp/kc/kcadm.config" \
+    "$(printf '%s config credentials --server http://localhost:8080 --realm master --user %q --password %q --config /tmp/kc/kcadm.config' \
+       "$KCADM" "$KC_USER" "$KC_PASS")" \
     >/dev/null 2>&1
 
 # ── Step 3: Create test users ─────────────────────────────────────────────
@@ -73,16 +79,13 @@ create_user() {
     local last=$5
 
     log_info "Creating user: $username (realm: $REALM)"
-    kubectl exec -n "$KC_NS" "$KC_POD" -- bash -c "
-$KCADM create users --config /tmp/kc/kcadm.config -r $REALM \
-    -s username=$username -s enabled=true -s emailVerified=true \
-    -s email=$email -s firstName='$first' -s lastName='$last' \
-    2>/dev/null && echo 'Created' || echo 'Exists'
+    kubectl exec -n "$KC_NS" "$KC_POD" -- bash -c \
+        "$(printf '%s create users --config /tmp/kc/kcadm.config -r %q -s username=%q -s enabled=true -s emailVerified=true -s email=%q -s firstName=%q -s lastName=%q 2>/dev/null && echo Created || echo Exists' \
+           "$KCADM" "$REALM" "$username" "$email" "$first" "$last")"
 
-$KCADM set-password --config /tmp/kc/kcadm.config -r $REALM \
-    --username $username --new-password $password \
-    2>/dev/null && echo 'Password set' || echo 'Password unchanged'
-"
+    kubectl exec -n "$KC_NS" "$KC_POD" -- bash -c \
+        "$(printf '%s set-password --config /tmp/kc/kcadm.config -r %q --username %q --new-password %q 2>/dev/null && echo Password_set || echo Password_unchanged' \
+           "$KCADM" "$REALM" "$username" "$password")"
 }
 
 # For the admin user, preserve the existing password from keycloak-initial-admin
@@ -109,14 +112,16 @@ create_user "ns-admin"  "$NS_PASS"    "ns-admin@kagenti.local" "Namespace" "Admi
 log_info "Creating Kagenti roles (idempotent)..."
 for role in kagenti-viewer kagenti-operator kagenti-admin; do
     kubectl exec -n "$KC_NS" "$KC_POD" -- bash -c \
-        "$KCADM create roles --config /tmp/kc/kcadm.config -r $REALM -s name=$role 2>/dev/null || true"
+        "$(printf '%s create roles --config /tmp/kc/kcadm.config -r %q -s name=%q 2>/dev/null || true' \
+           "$KCADM" "$REALM" "$role")"
 done
 
 assign_role() {
     local username=$1
     local rolename=$2
     kubectl exec -n "$KC_NS" "$KC_POD" -- bash -c \
-        "$KCADM add-roles --config /tmp/kc/kcadm.config -r $REALM --uusername $username --rolename $rolename 2>/dev/null || true"
+        "$(printf '%s add-roles --config /tmp/kc/kcadm.config -r %q --uusername %q --rolename %q 2>/dev/null || true' \
+           "$KCADM" "$REALM" "$username" "$rolename")"
 }
 
 # admin: all roles
@@ -147,10 +152,12 @@ log_success "kagenti-test-users secret updated"
 # ── Step 6: Summary ──────────────────────────────────────────────────────
 log_success "Test users created in realm: $REALM"
 echo ""
-echo "  Users:"
-echo "    admin     / $ADMIN_PASS   (admin)"
-echo "    dev-user  / $DEV_PASS   (developer)"
-echo "    ns-admin  / $NS_PASS   (namespace admin)"
+echo "  Users: admin, dev-user, ns-admin"
+if [[ "$REVEAL" == "true" ]]; then
+    echo "    admin     / $ADMIN_PASS   (admin)"
+    echo "    dev-user  / $DEV_PASS   (developer)"
+    echo "    ns-admin  / $NS_PASS   (namespace admin)"
+fi
 echo ""
 echo "  These users can log in to the Kagenti UI."
-echo "  Run show-services.sh --reveal to see all credentials."
+echo "  Run $0 --reveal to see passwords."
