@@ -20,6 +20,7 @@ spec:
         kagenti.io/framework: langgraph
         kagenti.io/runtime: platform-base
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:

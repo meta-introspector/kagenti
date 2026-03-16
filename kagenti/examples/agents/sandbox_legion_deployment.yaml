@@ -28,6 +28,7 @@ spec:
         kagenti.io/framework: LangGraph
         app.kubernetes.io/name: sandbox-legion
     spec:
+      automountServiceAccountToken: false
       containers:
       - name: agent
         image: image-registry.openshift-image-registry.svc:5000/team1/sandbox-agent:v0.0.1

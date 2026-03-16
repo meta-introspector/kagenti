@@ -32,6 +32,7 @@ spec:
         kagenti.io/framework: LangGraph
         app.kubernetes.io/name: sandbox-restricted
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:
