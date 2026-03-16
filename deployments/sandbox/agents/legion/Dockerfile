@@ -1,5 +1,5 @@
 # hadolint ignore=DL3007
-FROM kagenti-agent-base:latest
+FROM kagenti-agent-base:v0.0.1
 
 # Install Legion-specific dependencies (LangGraph + LLM)
 COPY requirements.txt /app/legion-requirements.txt
