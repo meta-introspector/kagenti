@@ -29,10 +29,22 @@ spec:
         app.kubernetes.io/name: sandbox-legion
     spec:
       automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
       containers:
       - name: agent
         image: image-registry.openshift-image-registry.svc:5000/team1/sandbox-agent:v0.0.1
         imagePullPolicy: Always
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          seccompProfile:
+            type: RuntimeDefault
+          capabilities:
+            drop:
+            - ALL
         env:
         - name: PORT
           value: "8000"
