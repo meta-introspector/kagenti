@@ -31,6 +31,34 @@ def _safe(value: object) -> str:
     return _LOG_UNSAFE.sub("", str(value))
 
 
+# Fields that may contain credentials or internal details in LiteLLM errors
+_SENSITIVE_ERROR_FIELDS = frozenset(
+    {"api_key", "api_base", "api_version", "litellm_params", "metadata", "traceback"}
+)
+
+
+def _sanitize_error_response(body: dict) -> dict:
+    """Strip sensitive fields from a LiteLLM error response before returning to client.
+
+    LiteLLM error bodies sometimes include ``litellm_params``, ``api_key``,
+    ``api_base``, or a full traceback.  We keep only the fields that a caller
+    needs to diagnose the problem without leaking credentials or internals.
+    """
+
+    def _strip(obj: object) -> object:
+        if isinstance(obj, dict):
+            return {
+                k: _strip(v)
+                for k, v in obj.items()
+                if k not in _SENSITIVE_ERROR_FIELDS
+            }
+        if isinstance(obj, list):
+            return [_strip(item) for item in obj]
+        return obj
+
+    return _strip(body)
+
+
 logger = logging.getLogger("llm-budget-proxy")
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s"
@@ -47,8 +75,26 @@ CACHE_TTL = float(os.environ.get("CACHE_TTL", "5.0"))
 
 # In-memory session token cache: session_id -> (tokens, monotonic_timestamp)
 _session_cache: dict[str, tuple[int, float]] = {}
+_SESSION_CACHE_MAX = 1000
+
+
+def _cache_set(session_id: str, tokens: int) -> None:
+    """Store a value in the session cache, evicting the oldest entry if full."""
+    if len(_session_cache) >= _SESSION_CACHE_MAX:
+        oldest = next(iter(_session_cache))
+        del _session_cache[oldest]
+    _session_cache[session_id] = (tokens, time.monotonic())
+
+
+# Shared httpx client — created in lifespan, closed on shutdown
+_http_client: httpx.AsyncClient | None = None
 
 db: asyncpg.Pool | None = None
+
+
+async def _get_pool() -> asyncpg.Pool | None:
+    """Return the DB pool if available."""
+    return db
 
 CREATE_TABLES_SQL = """
 CREATE TABLE IF NOT EXISTS llm_calls (
@@ -105,7 +151,10 @@ ON CONFLICT (scope, scope_key, namespace) DO NOTHING;
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global db
+    global db, _http_client
+    _http_client = httpx.AsyncClient(
+        base_url=LITELLM_URL, timeout=httpx.Timeout(300.0)
+    )
     if not DATABASE_URL:
         logger.error("DATABASE_URL not set — running without persistence")
     else:
@@ -117,6 +166,8 @@ async def lifespan(app: FastAPI):
         logger.info("DB migrated — tables ready")
     logger.info("LLM Budget Proxy ready — LITELLM_URL=%s", LITELLM_URL)
     yield
+    if _http_client:
+        await _http_client.aclose()
     if db:
         await db.close()
 
@@ -155,7 +206,7 @@ async def _get_session_tokens(session_id: str) -> int:
         "SELECT COALESCE(SUM(total_tokens), 0) FROM llm_calls WHERE session_id = $1",
         session_id,
     )
-    _session_cache[session_id] = (tokens, time.monotonic())
+    _cache_set(session_id, tokens)
     return tokens
 
 
@@ -208,39 +259,58 @@ async def _record_call(
 async def _check_budget(
     session_id: str, max_tokens: int, meta: dict, model: str
 ) -> JSONResponse | None:
-    """Check session budget. Returns 402 response if exceeded, None if OK."""
+    """Check session budget under advisory lock to prevent TOCTOU bypass.
+
+    Uses a PostgreSQL advisory lock (scoped to the transaction) keyed on the
+    session_id hash so that concurrent requests for the same session are
+    serialised through the budget check + record path.
+
+    Returns a 402 JSONResponse if budget is exceeded, None if OK.
+    """
     if not session_id or max_tokens <= 0:
         return None
-    used = await _get_session_tokens(session_id)
-    if used >= max_tokens:
-        msg = f"Session budget exceeded: {used:,}/{max_tokens:,} tokens"
-        await _record_call(
-            session_id=session_id,
-            user_id=meta.get("user_id", ""),
-            agent_name=meta.get("agent_name", ""),
-            namespace=meta.get("namespace", ""),
-            model=model,
-            status="budget_exceeded",
-            error_message=msg,
-        )
-        logger.warning(
-            "Budget exceeded for session %s: %d/%d",
-            _safe(session_id[:12]),
-            used,
-            max_tokens,
-        )
-        return JSONResponse(
-            status_code=402,
-            content={
-                "error": {
-                    "message": msg,
-                    "type": "budget_exceeded",
-                    "code": "budget_exceeded",
-                    "tokens_used": used,
-                    "tokens_budget": max_tokens,
-                }
-            },
-        )
+    pool = await _get_pool()
+    if not pool:
+        return None
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Advisory lock on session_id hash to prevent concurrent budget bypass
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtext($1))", session_id
+            )
+            used = await conn.fetchval(
+                "SELECT COALESCE(SUM(total_tokens), 0) FROM llm_calls WHERE session_id = $1",
+                session_id,
+            )
+            if used >= max_tokens:
+                msg = f"Session budget exceeded: {used:,}/{max_tokens:,} tokens"
+                await _record_call(
+                    session_id=session_id,
+                    user_id=meta.get("user_id", ""),
+                    agent_name=meta.get("agent_name", ""),
+                    namespace=meta.get("namespace", ""),
+                    model=model,
+                    status="budget_exceeded",
+                    error_message=msg,
+                )
+                logger.warning(
+                    "Budget exceeded for session %s: %d/%d",
+                    _safe(session_id[:12]),
+                    used,
+                    max_tokens,
+                )
+                return JSONResponse(
+                    status_code=402,
+                    content={
+                        "error": {
+                            "message": msg,
+                            "type": "budget_exceeded",
+                            "code": "budget_exceeded",
+                            "tokens_used": used,
+                            "tokens_budget": max_tokens,
+                        }
+                    },
+                )
     return None
 
 
@@ -278,15 +348,14 @@ async def chat_completions(request: Request):
         )
 
     # Non-streaming: forward and record
-    async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-        resp = await client.post(
-            f"{LITELLM_URL}/v1/chat/completions",
-            json=body,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-        )
+    resp = await _http_client.post(
+        "/v1/chat/completions",
+        json=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
 
     latency_ms = int((time.monotonic() - start_time) * 1000)
 
@@ -301,7 +370,10 @@ async def chat_completions(request: Request):
             status="error",
             error_message=f"LiteLLM returned {resp.status_code}",
         )
-        return JSONResponse(status_code=resp.status_code, content=resp.json())
+        return JSONResponse(
+            status_code=resp.status_code,
+            content=_sanitize_error_response(resp.json()),
+        )
 
     result = resp.json()
     usage = result.get("usage", {})
@@ -330,30 +402,29 @@ async def _stream_and_track(body: dict, api_key: str, meta: dict, start_time: fl
     body.setdefault("stream_options", {})
     body["stream_options"]["include_usage"] = True
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-        async with client.stream(
-            "POST",
-            f"{LITELLM_URL}/v1/chat/completions",
-            json=body,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-        ) as resp:
-            async for line in resp.aiter_lines():
-                yield line + "\n"
-                if line.startswith("data: ") and line != "data: [DONE]":
-                    try:
-                        chunk = json.loads(line[6:])
-                        usage = chunk.get("usage")
-                        if usage:
-                            prompt_tokens = usage.get("prompt_tokens", prompt_tokens)
-                            completion_tokens = usage.get(
-                                "completion_tokens", completion_tokens
-                            )
-                            total_tokens = usage.get("total_tokens", total_tokens)
-                    except (json.JSONDecodeError, KeyError):
-                        pass
+    async with _http_client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    ) as resp:
+        async for line in resp.aiter_lines():
+            yield line + "\n"
+            if line.startswith("data: ") and line != "data: [DONE]":
+                try:
+                    chunk = json.loads(line[6:])
+                    usage = chunk.get("usage")
+                    if usage:
+                        prompt_tokens = usage.get("prompt_tokens", prompt_tokens)
+                        completion_tokens = usage.get(
+                            "completion_tokens", completion_tokens
+                        )
+                        total_tokens = usage.get("total_tokens", total_tokens)
+                except (json.JSONDecodeError, KeyError):
+                    pass
 
     latency_ms = int((time.monotonic() - start_time) * 1000)
     await _record_call(
@@ -382,15 +453,14 @@ async def embeddings(request: Request):
     api_key = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
     meta = _extract_metadata(body)
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(60.0)) as client:
-        resp = await client.post(
-            f"{LITELLM_URL}/v1/embeddings",
-            json=body,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-        )
+    resp = await _http_client.post(
+        "/v1/embeddings",
+        json=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+    )
 
     if resp.status_code == 200:
         result = resp.json()
@@ -405,19 +475,24 @@ async def embeddings(request: Request):
             total_tokens=usage.get("total_tokens", 0),
         )
         return result
-    return JSONResponse(status_code=resp.status_code, content=resp.json())
+    return JSONResponse(
+        status_code=resp.status_code,
+        content=_sanitize_error_response(resp.json()),
+    )
 
 
 @app.get("/v1/models")
 async def models(request: Request):
     """Forward models list to LiteLLM."""
     api_key = request.headers.get("authorization", "").removeprefix("Bearer ").strip()
-    async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-        resp = await client.get(
-            f"{LITELLM_URL}/v1/models",
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
-    return JSONResponse(status_code=resp.status_code, content=resp.json())
+    resp = await _http_client.get(
+        "/v1/models",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    content = resp.json()
+    if resp.status_code != 200:
+        content = _sanitize_error_response(content)
+    return JSONResponse(status_code=resp.status_code, content=content)
 
 
 @app.get("/internal/usage/{session_id}")
