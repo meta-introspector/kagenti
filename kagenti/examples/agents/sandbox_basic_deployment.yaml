@@ -31,6 +31,7 @@ spec:
         kagenti.io/framework: LangGraph
         app.kubernetes.io/name: sandbox-basic
     spec:
+      automountServiceAccountToken: false
       securityContext:
         runAsNonRoot: true
         seccompProfile:
@@ -76,7 +77,10 @@ spec:
               name: github-token-secret
               key: token
         - name: TASK_STORE_DB_URL
-          value: "postgresql+psycopg://kagenti:kagenti-sessions-dev@postgres-sessions.team1:5432/sessions?sslmode=disable"
+          valueFrom:
+            secretKeyRef:
+              name: postgres-sessions-secret
+              key: task-store-db-url
         ports:
         - containerPort: 8000
           name: http

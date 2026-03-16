@@ -18,6 +18,9 @@ stringData:
   database: sessions
   username: kagenti
   password: kagenti-sessions-dev
+  checkpoint-db-url: "postgresql://kagenti:kagenti-sessions-dev@postgres-sessions.team1:5432/sessions?sslmode=disable"
+  task-store-db-url: "postgresql+psycopg://kagenti:kagenti-sessions-dev@postgres-sessions.team1:5432/sessions?sslmode=disable"
+  llm-budget-db-url: "postgresql://kagenti:kagenti-sessions-dev@postgres-sessions.team1.svc:5432/llm_budget"
 ---
 apiVersion: apps/v1
 kind: StatefulSet
@@ -51,7 +54,7 @@ spec:
         securityContext:
           runAsNonRoot: true
           allowPrivilegeEscalation: false
-          readOnlyRootFilesystem: false
+          readOnlyRootFilesystem: true
           seccompProfile:
             type: RuntimeDefault
           capabilities:
@@ -81,6 +84,15 @@ spec:
         volumeMounts:
         - name: postgres-data
           mountPath: /var/lib/pgsql/data
+        - name: tmp
+          mountPath: /tmp
+        - name: run
+          mountPath: /var/run/postgresql
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: run
+        emptyDir: {}
   volumeClaimTemplates:
   - metadata:
       name: postgres-data

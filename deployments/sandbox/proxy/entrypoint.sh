@@ -18,8 +18,17 @@ if [ -n "${ALLOWED_DOMAINS:-}" ]; then
     for domain in $ALLOWED_DOMAINS; do
         # Trim whitespace (POSIX-compatible)
         domain=$(echo "$domain" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        [ -n "$domain" ] && ACLS="${ACLS}acl allowed_domains dstdomain ${domain}
+        # Validate domain to prevent injection into squid config
+        if [ -n "$domain" ]; then
+            case "$domain" in
+                *[!.a-zA-Z0-9-]*)
+                    echo "ERROR: Invalid domain: $domain" >&2
+                    exit 1
+                    ;;
+            esac
+            ACLS="${ACLS}acl allowed_domains dstdomain ${domain}
 "
+        fi
     done
     IFS="$OLD_IFS"
 
