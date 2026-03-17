@@ -979,7 +979,11 @@ if [ "$RUN_INSTALL" = "true" ]; then
 
 
     log_step "Applying pipeline template..."
-    ./.github/scripts/kagenti-operator/42-apply-pipeline-template.sh
+    if [ -f "./.github/scripts/kagenti-operator/42-apply-pipeline-template.sh" ]; then
+        ./.github/scripts/kagenti-operator/42-apply-pipeline-template.sh
+    else
+        log_info "Pipeline template script not found — skipping (available on main)"
+    fi
 
     log_step "Fixing Keycloak admin (RHBK operator workaround)..."
     ./.github/scripts/kagenti-operator/36-fix-keycloak-admin.sh
