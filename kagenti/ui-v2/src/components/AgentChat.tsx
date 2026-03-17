@@ -63,9 +63,6 @@ const markdownComponents = {
   strong: ({ children }: any) => <strong style={{ fontWeight: 600 }}>{children}</strong>,
 };
 
-// Tool names considered safe for auto-approve (no HITL card shown)
-const AUTO_APPROVE_TOOLS = ['get_weather', 'search', 'get_time', 'list_items'];
-
 interface Message {
   id: string;
   role: 'user' | 'assistant';
@@ -200,15 +197,12 @@ export const AgentChat: React.FC<AgentChatProps> = ({ namespace, name }) => {
               if (line.startsWith('data: ')) {
                 try {
                   const data = JSON.parse(line.slice(6));
-                  console.log('[AgentChat] Received SSE data:', data);
-
                   if (data.session_id) {
                     setSessionId(data.session_id);
                   }
 
                   // Process event if present
                   if (data.event) {
-                    console.log('[AgentChat] Processing event:', data.event);
                     const event: A2AEvent = {
                       id: `event-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                       timestamp: new Date(),
@@ -227,23 +221,8 @@ export const AgentChat: React.FC<AgentChatProps> = ({ namespace, name }) => {
                       }
                     }
 
-                    // Auto-approve safe HITL requests
-                    if (data.event.type === 'hitl_request') {
-                      const toolName = data.event.message?.match(/tool[:\s]+(\w+)/i)?.[1] || '';
-                      if (AUTO_APPROVE_TOOLS.includes(toolName.toLowerCase())) {
-                        console.log(`[AgentChat] Auto-approving safe tool: ${toolName}`);
-                        event.type = 'status';
-                        event.state = 'AUTO_APPROVED';
-                        // Send approval response
-                        handleHitlResponse(data.event.taskId, 'approve');
-                      }
-                    }
-
                     collectedEvents.push(event);
-                    console.log('[AgentChat] Added event to collection, total events:', collectedEvents.length, event);
                     setStreamingEvents([...collectedEvents]);
-                  } else {
-                    console.log('[AgentChat] No event field in data, skipping event creation');
                   }
 
                   // Accumulate content (for final message)
@@ -274,9 +253,8 @@ export const AgentChat: React.FC<AgentChatProps> = ({ namespace, name }) => {
                   if (data.done) {
                     break;
                   }
-                } catch (parseError) {
-                  // Log parse errors for debugging (may be incomplete chunks)
-                  console.log('[AgentChat] Parse error for line:', line.slice(0, 200), parseError);
+                } catch {
+                  // Skip parse errors (may be incomplete chunks)
                 }
               }
             }
@@ -351,9 +329,8 @@ export const AgentChat: React.FC<AgentChatProps> = ({ namespace, name }) => {
           body: JSON.stringify({ message, session_id: sessionId }),
         }
       );
-      console.log(`[AgentChat] HITL ${action} sent for task ${taskId}`);
-    } catch (error) {
-      console.error(`[AgentChat] Failed to send HITL ${action}:`, error);
+    } catch {
+      // HITL response failed — UI will still show the approval buttons
     }
   };
 
