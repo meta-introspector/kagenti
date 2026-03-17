@@ -80,8 +80,8 @@ async function apiFetch<T>(
   }
 
   const response = await fetch(url, {
-    headers,
     ...options,
+    headers: { ...options?.headers, ...headers },
   });
 
   if (!response.ok) {
